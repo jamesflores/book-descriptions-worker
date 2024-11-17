@@ -1,7 +1,35 @@
 export default {
 	async fetch(request, env) {
 	  try {
+		// Maybe trigger cleanup
+		if (shouldRunCleanup(env)) {
+		  console.log('Triggering cleanup of old descriptions');
+		  // Don't await to avoid delaying the response
+		  cleanupOldDescriptions(env.DB, env.DESCRIPTION_RETENTION_DAYS || 30)
+			.catch(error => console.error('Cleanup error:', error));
+		}
+  
 		const url = new URL(request.url);
+  
+		// Handle status endpoint
+		if (url.pathname === '/status') {
+		  const stats = await getSystemStatus(env.DB, env);
+		  return new Response(JSON.stringify(stats, null, 2), {
+			headers: { 'Content-Type': 'application/json' }
+		  });
+		}
+  
+		// Handle cleanup endpoint
+		if (url.pathname === '/cleanup') {
+		  const cleaned = await cleanupOldDescriptions(env.DB, env.DESCRIPTION_RETENTION_DAYS || 30);
+		  return new Response(JSON.stringify({
+			message: 'Cleanup completed',
+			deletedCount: cleaned
+		  }), {
+			headers: { 'Content-Type': 'application/json' }
+		  });
+		}
+  
 		let bookTitle = url.searchParams.get('book_title');
 		let authorName = url.searchParams.get('author_name');
   
@@ -75,6 +103,114 @@ export default {
 	  }
 	}
   };
+  
+  function shouldRunCleanup(env) {
+	const probability = parseInt(env.CLEANUP_PROBABILITY || '5', 10);
+	return Math.random() * 100 < probability;
+  }
+  
+  async function getSystemStatus(db, env) {
+	const queries = {
+	  totalDescriptions: `
+		SELECT COUNT(*) as count 
+		FROM book_descriptions
+	  `,
+	  storageUsage: `
+		SELECT 
+		  COUNT(*) as total_entries,
+		  SUM(LENGTH(description)) as description_bytes,
+		  SUM(LENGTH(book_title)) as title_bytes,
+		  SUM(LENGTH(author_name)) as author_bytes,
+		  SUM(LENGTH(description) + LENGTH(book_title) + LENGTH(author_name)) as total_bytes
+		FROM book_descriptions
+	  `,
+	  oldestNewest: `
+		SELECT 
+		  MIN(created_at) as oldest_entry,
+		  MAX(created_at) as newest_entry
+		FROM book_descriptions
+	  `,
+	  ageDistribution: `
+		SELECT 
+		  CASE 
+			WHEN julianday('now') - julianday(created_at) < 1 THEN 'last_24h'
+			WHEN julianday('now') - julianday(created_at) < 7 THEN 'last_7d'
+			WHEN julianday('now') - julianday(created_at) < 30 THEN 'last_30d'
+			ELSE 'older'
+		  END as age,
+		  COUNT(*) as count
+		FROM book_descriptions
+		GROUP BY age
+	  `,
+	  noDescriptionCount: `
+		SELECT COUNT(*) as count
+		FROM book_descriptions
+		WHERE description = 'No description available'
+	  `,
+	  averageDescriptionLength: `
+		SELECT AVG(LENGTH(description)) as avg_length
+		FROM book_descriptions
+		WHERE description != 'No description available'
+	  `
+	};
+  
+	const results = {};
+	
+	// Execute all queries
+	for (const [key, query] of Object.entries(queries)) {
+	  results[key] = await db.prepare(query).all();
+	}
+  
+	// Format the results into a nice status object
+	const status = {
+	  database: {
+		total_entries: results.storageUsage.results[0].total_entries,
+		storage: {
+		  descriptions_mb: (results.storageUsage.results[0].description_bytes / (1024 * 1024)).toFixed(2),
+		  titles_mb: (results.storageUsage.results[0].title_bytes / (1024 * 1024)).toFixed(2),
+		  authors_mb: (results.storageUsage.results[0].author_bytes / (1024 * 1024)).toFixed(2),
+		  total_mb: (results.storageUsage.results[0].total_bytes / (1024 * 1024)).toFixed(2)
+		},
+		timestamps: {
+		  oldest_entry: results.oldestNewest.results[0].oldest_entry,
+		  newest_entry: results.oldestNewest.results[0].newest_entry
+		}
+	  },
+	  entries: {
+		total: results.totalDescriptions.results[0].count,
+		no_description_count: results.noDescriptionCount.results[0].count,
+		average_description_length: Math.round(results.averageDescriptionLength.results[0].avg_length)
+	  },
+	  age_distribution: results.ageDistribution.results.reduce((acc, item) => {
+		acc[item.age] = item.count;
+		return acc;
+	  }, {}),
+	  configuration: {
+		retention_days: parseInt(env.DESCRIPTION_RETENTION_DAYS || '30'),
+		cleanup_probability: parseInt(env.CLEANUP_PROBABILITY || '5')
+	  },
+	  cleanup_estimation: {
+		entries_older_than_retention: results.ageDistribution.results
+		  .find(r => r.age === 'older')?.count || 0
+	  }
+	};
+  
+	return status;
+  }
+  
+  async function cleanupOldDescriptions(db, retentionDays) {
+	const cutoffDate = new Date();
+	cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+	const cutoffDateStr = cutoffDate.toISOString();
+  
+	const result = await db.prepare(
+	  'DELETE FROM book_descriptions WHERE created_at < ? RETURNING id'
+	).bind(cutoffDateStr).all();
+  
+	const deletedCount = result?.results?.length || 0;
+	console.log(`Cleaned up ${deletedCount} old descriptions`);
+	return deletedCount;
+  }
   
   async function checkCache(db, bookTitle, authorName) {
 	const result = await db.prepare(

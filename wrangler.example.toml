@@ -12,6 +12,11 @@ binding = "DB" # Available in your Worker as env.DB
 database_name = "book-descriptions"
 database_id = "YOUR-DATABASE-ID-HERE" # Replace with your actual database ID
 
+# Environment variables for database cleanup config
+[vars]
+DESCRIPTION_RETENTION_DAYS = "30"
+CLEANUP_PROBABILITY = "5"
+
 # Secrets are not included here - they should be set using:
 # wrangler secret put GOOGLE_BOOKS_API_KEY
 # Required secrets:

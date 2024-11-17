@@ -11,6 +11,9 @@ A Cloudflare Worker that handles book description retrieval and caching. The wor
 - Error handling and logging
 - Browser-side caching headers
 - Fallback for missing descriptions
+- Automatic cleanup of old descriptions
+- Status monitoring endpoint
+- Manual cleanup endpoint
 
 ## Setup
 
@@ -95,6 +98,15 @@ my-book-descriptions/
 
 Now continue with the deployment steps as normal.
 
+## Configuration
+
+Set these environment variables in your `wrangler.toml`:
+```toml
+[vars]
+DESCRIPTION_RETENTION_DAYS = "30"  # How long to keep descriptions
+CLEANUP_PROBABILITY = "5"          # Percentage chance of cleanup per request
+```
+
 ## Deployment
 
 Deploy to Cloudflare Workers:
@@ -119,22 +131,21 @@ routes = [
 
 ## Usage
 
-The worker accepts GET requests with two query parameters:
+The worker provides several endpoints:
+
+### Book Description Endpoint
 
 ```
-https://custom.domain.com/?book_title=Book%20Title&author_name=Author%20Name
+GET /?book_title=Book%20Title&author_name=Author%20Name
 ```
 
-### Parameters
-
+Parameters:
 | Parameter | Description | Required |
 |-----------|-------------|----------|
 | book_title | Title of the book | Yes |
 | author_name | Name of the author | Yes |
 
-### Response Format
-
-Success:
+Response Format:
 ```json
 {
   "description": "Book description text",
@@ -142,11 +153,60 @@ Success:
 }
 ```
 
-Error:
+### Status Endpoint
+
+```
+GET /status
+```
+
+Returns system statistics and database information:
 ```json
 {
-  "error": "Error message",
-  "details": "Additional error details"
+  "database": {
+    "total_entries": 1234,
+    "storage": {
+      "descriptions_mb": "2.45",
+      "titles_mb": "0.12",
+      "authors_mb": "0.08",
+      "total_mb": "2.65"
+    },
+    "timestamps": {
+      "oldest_entry": "2024-01-01T00:00:00.000Z",
+      "newest_entry": "2024-11-17T12:34:56.789Z"
+    }
+  },
+  "entries": {
+    "total": 1234,
+    "no_description_count": 45,
+    "average_description_length": 1500
+  },
+  "age_distribution": {
+    "last_24h": 12,
+    "last_7d": 89,
+    "last_30d": 456,
+    "older": 677
+  },
+  "configuration": {
+    "retention_days": 30,
+    "cleanup_probability": 5
+  },
+  "cleanup_estimation": {
+    "entries_older_than_retention": 677
+  }
+}
+```
+
+### Cleanup Endpoint
+
+```
+GET /cleanup
+```
+
+Manually triggers cleanup of old descriptions. Returns:
+```json
+{
+  "message": "Cleanup completed",
+  "deletedCount": 123
 }
 ```
 
@@ -174,6 +234,11 @@ Clear cache:
 wrangler d1 execute book-descriptions --command="DELETE FROM book_descriptions;"
 ```
 
+Check storage usage:
+```bash
+curl https://your-worker.workers.dev/status
+```
+
 ## Error Handling
 
 The worker includes several layers of error handling:
@@ -188,6 +253,7 @@ The worker includes several layers of error handling:
    - Permanent storage of descriptions
    - Case-insensitive lookups
    - Stores "No description available" for missing descriptions
+   - Automatic cleanup of entries older than retention period
 
 2. WordPress Transient Cache:
    - 12-hour cache in WordPress
