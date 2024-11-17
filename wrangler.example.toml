@@ -1,0 +1,18 @@
+# Example configuration file - copy to wrangler.toml and update values
+name = "book-descriptions"
+main = "src/index.js"
+compatibility_date = "2024-11-17"
+
+# Optional: Set to false to disable the workers.dev domain
+# workers_dev = false
+
+# Your D1 database configuration
+[[d1_databases]]
+binding = "DB" # Available in your Worker as env.DB
+database_name = "book-descriptions"
+database_id = "YOUR-DATABASE-ID-HERE" # Replace with your actual database ID
+
+# Secrets are not included here - they should be set using:
+# wrangler secret put GOOGLE_BOOKS_API_KEY
+# Required secrets:
+# - GOOGLE_BOOKS_API_KEY
